@@ -30,6 +30,8 @@ interface eth1 {
     prefix ::/64 {
         AdvValidLifetime 300;
         AdvPreferredLifetime 120;
+        AdvOnLink on;
+        AdvAutonomous on;
     };
 };
 
