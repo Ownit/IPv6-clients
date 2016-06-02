@@ -1,0 +1,86 @@
+EdgeRouter IPv6 + PD med Ownit
+
+1. Editera /etc/sysctl.conf för att forwarda IPv6 och acceptera Router Advertisements
+~$ sudo vi /etc/sysctl.conf
+Lägg till:
+net.ipv6.conf.all.forwarding = 1 # Slå igång IPv6 Forwarding
+net.ipv6.conf.eth0.accept_ra = 2 # Acceptera RA (läs nedan)
+
+#accept_ra – BOOLEAN
+#Possible values are:
+#
+#0 Do not accept Router Advertisements.
+#1 Accept Router Advertisements if forwarding is disabled.
+#2 Overrule forwarding behaviour. Accept Router Advertisements even if forwarding is enabled.
+#Functional default:
+#
+#enabled if local forwarding is disabled.
+#disabled if local forwarding is enabled.
+
+Defaultbeteendet i Linux är att inte acceptera RA om IPv6 forwarding är påslaget.
+Tanken bakom det är gissningsvis att statiska IPv6-konfigurationer hittills varit det vanligaste i routersyfte.
+Men i vårt fall så vill vi få både vår IPv6-adress och vår default gateway automatiskt, därav flagga 2.
+I IPv6 får man inte default gateway via DHCP.
+
+I alla fall, applicera kommandona direkt för att slippa en reboot:
+~$ sudo sysctl -w net.ipv6.conf.all.forwarding = 1
+~$ sudo sysctl -w net.ipv6.conf.eth0.accept_ra = 2
+
+2. Editera wide-dhcp6 konfigurationen för att plocka ett Prefix Delegation-nät och domänservrar 
+
+~$ sudo vi /etc/wide-dhcpv6/dhcp6c.conf
+
+interface eth0 { # WAN
+        send ia-pd 0; # Fråga ISP:ns DHCP om PD-nät. 0 är ID-t på assoc nedan.
+        request domain-name-servers; # Fråga om domänservrar
+};
+
+id-assoc pd 0 { # ID:t ovan
+        prefix-interface switch0 { #LAN
+                sla-id 1; # Detta är ID't på prefixet. 2a01:3b8:dead:ff00/56 blir 2a01:3b8:dead:ff01/64
+                sla-len 8; # Storlek på PD-nätet, relaterat till ett /64 (/56 blir 8)
+        };
+};
+
+Starta wide-dhcpv6-client:
+~$ sudo /etc/init.d/wide-dhcpv6-client start
+(denna hade inte x-flaggan för mig, men satt inte heller i defaultinstallation)
+
+När detta är gjort så borde det finnas en adress från PD-nätet på LAN-interfacet:
+  switch0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN
+    inet6 2a01:3b8:dead:ff01:618:d6ff:fec3:d834/64 scope global
+       valid_lft forever preferred_lft forever
+    inet6 fe80::618:d6ff:fec3:d834/64 scope link
+       valid_lft forever preferred_lft forever
+
+3. Annonsera nätet på LAN-sidan så att klienterna kan plocka IP via SLAAC
+
+I CLIt:
+
+configure
+set interfaces switch switch0 ipv6 router-advert send-advert true # Skicka RA's
+set interfaces switch switch0 ipv6 router-advert prefix ::/64 # Annonsera ett /64 till klienterna.
+#set interfaces switch switch0 ipv6 router-advert prefix 2a01:3b8:dead:ff01/64 # Annonsera prefixet som är konfigurerat i wide-dhcpv6 (alternativ till det ovan)
+commit
+save
+
+#Special prefix "::/64" is also supported on systems that implement getifaddrs() (on other systems, configuration activation fails and radvd exits). 
+#When configured, radvd picks one non-link-local prefix assigned to the interface and starts advertising it.
+
+Kolla även så att alla routes finns:
+
+~$ ip -6 route
+2a01:3b8:dead:aaaa::/64 dev eth0  proto kernel  metric 256 # Route till andra klienter i samma subnät
+2a01:3b8:dead:ff01::/64 dev switch0  proto kernel  metric 256 # Route till PD-nätet
+2a01:3b8:dead::/48 dev eth0  proto kernel  metric 256  expires 9968sec # Route till hela /48'an på VLANet 
+fe80::/64 dev switch0  proto kernel  metric 256
+fe80::/64 dev br0  proto kernel  metric 256
+fe80::/64 dev eth0  proto kernel  metric 256
+fe80::/64 dev eth1  proto kernel  metric 256
+fe80::/64 dev eth0.501  proto kernel  metric 256
+fe80::/64 dev eth2  proto kernel  metric 256
+fe80::/64 dev eth3  proto kernel  metric 256
+fe80::/64 dev eth4  proto kernel  metric 256
+default via fe80::20c:dbff:fef6:f00 dev eth0  proto ra  metric 1024  expires 1768sec # Defaultroute till ISP:ns router. Vi kan prata link-local dit och ändå komma ut på internet.
+
+4. Klart! Testa IPv6 på klienterna.
