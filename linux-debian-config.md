@@ -97,3 +97,63 @@ COMMIT
 ```
 
 Reboot the server (the iptables-persistent package will help us apply /etc/iptables/rules.v6 on boot) or run `iptables-restore < /etc/iptables/rules.v6`
+
+
+## nftables rules
+
+Debian 10 (buster) and later use the nftables framework by default instead of iptables. More info is available [here](https://wiki.debian.org/nftables) at Debian Wiki. The example below should be similar to the iptables example, but nftables allows us to work with IPv4 and IPv6 at the same time through the *inet* family. The example also uses source NAT instead of masquerade for IPv4 since I always get the same external IP address from the DHCP-server.
+
+#### /etc/nftables.conf
+
+```
+#!/usr/sbin/nft -f
+
+# Define interfaces
+define external = enp3s0
+define internal = enp2s0
+
+# External address for source NAT
+define external_ip = 37.46.xxx.xxx
+
+# Flush current ruleset
+flush ruleset
+
+table inet firewall {
+        chain input {
+                type filter hook input priority 0; policy drop;
+
+                ct state invalid drop
+                ct state established,related accept
+
+                iif lo accept
+                iif $internal accept
+
+                ip protocol icmp limit rate 10/second accept
+                ip6 nexthdr icmpv6 limit rate 10/second accept
+
+                tcp dport 22 accept
+                udp dport 546 ip6 daddr fe80::/64 accept
+        }
+
+        chain forward {
+                type filter hook forward priority 0; policy drop;
+
+                iif $external oif $internal ct state established,related accept
+                iif $internal oif $external accept
+        }
+
+        chain output {
+                type filter hook output priority 0; policy accept;
+        }
+}
+
+table ip nat {
+        chain postrouting {
+                type nat hook postrouting priority 100; policy accept;
+
+                oif $external snat $external_ip
+        }
+}
+```
+
+Use `nft -cf /etc/nftables.conf` to validate syntax and `nft -f /etc/nftables.conf` to apply the ruleset from file.
